@@ -1,10 +1,11 @@
 package avroEx;
 
 import static org.apache.avro.SchemaCompatibility.checkReaderWriterCompatibility;
+
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 import org.apache.avro.Schema;
@@ -20,7 +21,6 @@ import org.codehaus.jackson.node.NullNode;
 import com.google.common.base.Objects;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
@@ -30,9 +30,6 @@ public class Schemas {
 	private static final Splitter NEWLINE_SPLITTER = Splitter.on("\n");
 	private static final Splitter PIPE_SPLITTER = Splitter.on("|");
 	private static final String DOC_STRING = "Field created Automatically";
-
-	private static final Map<Types, Object> TYPE_TO_DEFAULT = ImmutableMap.<Types, Object>builder()
-			.put(Types.ORA_INT, NullNode.getInstance()).put(Types.ORA_VARCHAR, NullNode.getInstance()).build();
 
 	public Schemas() {
 		super();
@@ -52,7 +49,7 @@ public class Schemas {
 			String line = iterator.next();
 
 			String[] array = Iterables.toArray(PIPE_SPLITTER.split(line), String.class);
-			System.out.println(TYPE_TO_DEFAULT.get(getType(array[1], "ORACLE")));
+			// System.out.println(TYPE_TO_DEFAULT.get(getType(array[1], "ORACLE")));
 			fields.add(
 					new Field(array[0], getSchema(array[1], "ORACLE"), DOC_STRING, (JsonNode) NullNode.getInstance()));
 
@@ -80,9 +77,8 @@ public class Schemas {
 		}
 			break;
 		case ORA_NCHAR:
-			break;
 		case ORA_NVARCHAR2:
-			break;
+		case ORA_VARCHAR2:
 		case ORA_VARCHAR: {
 			List<Schema> types = Lists.newLinkedList();
 			types.add(Schema.create(Type.NULL));
@@ -90,12 +86,18 @@ public class Schemas {
 			returnFieldSchema = Schema.createUnion(types);
 		}
 			break;
-		case ORA_VARCHAR2:
-			break;
 		case ORA_NUMBER: {
 			List<Schema> types = Lists.newLinkedList();
 			types.add(Schema.create(Type.NULL));
 			types.add(Schema.create(Type.DOUBLE));
+			returnFieldSchema = Schema.createUnion(types);
+		}
+			break;
+
+		case ORA_FLOAT: {
+			List<Schema> types = Lists.newLinkedList();
+			types.add(Schema.create(Type.NULL));
+			types.add(Schema.create(Type.FLOAT));
 			returnFieldSchema = Schema.createUnion(types);
 		}
 		default:
@@ -106,7 +108,7 @@ public class Schemas {
 	}
 
 	public enum Types {
-		ORA_INT, ORA_CHAR, ORA_VARCHAR, ORA_VARCHAR2, ORA_NCHAR, ORA_NVARCHAR2, ORA_BLOB, ORA_CLOB, ORA_NUMBER;
+		ORA_INT, ORA_CHAR, ORA_VARCHAR, ORA_VARCHAR2, ORA_NCHAR, ORA_NVARCHAR2, ORA_BLOB, ORA_CLOB, ORA_NUMBER, ORA_FLOAT;
 
 		public static Types getType(String type, String vendor) {
 			Types returnValue = null;
@@ -191,7 +193,7 @@ public class Schemas {
 
 		switch (left.getType()) {
 		case UNION:
-			return union(left, right);
+			return lUnion(left, right);
 		case RECORD:
 			if (left.getName() == null && right.getName() == null && fieldSimilarity(left, right) < SIMILARITY_THRESH) {
 				return null;
@@ -266,14 +268,31 @@ public class Schemas {
 					types.add(schemas.next());
 				}
 
-				if (notMerged) {
-					types.add(right);
+				if (right.getFields().size() > types.size()) {
+					if (notMerged) {
+						types.add(right);
+					}
 				}
 
 				return Schema.createUnion(types);
 			}
 		} else if (right.getType() == Schema.Type.UNION) {
 			return union(right, left);
+		}
+
+		return Schema.createUnion(ImmutableList.of(left, right));
+	}
+
+	private static Schema lUnion(Schema left, Schema right) {
+		if (left.getType() == Schema.Type.UNION) {
+			if (right.getType() == Schema.Type.UNION) {
+				List<Schema> leftTypes = left.getTypes();
+				List<Schema> rightTypes = right.getTypes();
+
+				if (leftTypes.size() == rightTypes.size())
+					return left;
+
+			}
 		}
 
 		return Schema.createUnion(ImmutableList.of(left, right));
@@ -385,8 +404,7 @@ public class Schemas {
 	private static boolean compare(Schema left, Schema right) {
 		boolean returnValue = false;
 
-		if (Objects.equal(left.getName(), right.getName()) 
-				&& Objects.equal(left.getNamespace(), right.getNamespace())
+		if (Objects.equal(left.getName(), right.getName()) && Objects.equal(left.getNamespace(), right.getNamespace())
 				&& Objects.equal(left.getType(), right.getType())
 				&& Objects.equal(left.getFields(), right.getFields())) {
 			returnValue = true;
@@ -397,51 +415,48 @@ public class Schemas {
 	public static void main(String[] args) {
 		Schemas s = new Schemas();
 		Schema schema = s.toAvsc("abc|int|1\ndef|varchar|2");
-		System.out.println(schema.toString(true));
-
-		Schema evolvedAdd = s.toAvsc("abc|int|1\ndef|varchar|2\nefg|varchar|2");
-		// schema.addProp("version", "2");
-		System.out.println(evolvedAdd.toString(true));
+		// System.out.println(schema.toString(true));
 
 		Schema reader = merge(schema, schema);
 		reader.addProp("version", IntNode.valueOf(1));
 		System.out.println(reader.toString(true));
 
-		Schema merged = merge(reader, evolvedAdd);
-		merged.addProp("version", IntNode.valueOf(2));
-		System.out.println(merged.toString(true));
+		Schema writerAdd = s.toAvsc("abc|int|1\ndef|varchar|2\nefg|varchar|2");
+		// System.out.println(writerAdd.toString(true));
 
-		Schema evolvedDel = s.toAvsc("abc|int|1\nefg|varchar|2");
-		System.out.println(evolvedDel.toString(true));
+		Schema readerAdd = merge(writerAdd, reader);
+		readerAdd.addProp("version", IntNode.valueOf(2));
+		System.out.println(readerAdd.toString(true));
 
-		Schema evolved2 = merge(reader, evolvedDel);
-		evolved2.addProp("version", IntNode.valueOf(3));
-		System.out.println(evolved2.toString(true));
+		Schema writerDel = s.toAvsc("abc|int|1\nefg|varchar|2");
+		// System.out.println(writerDel.toString(true));
 
-		Schema evolvedChange = s.toAvsc("abc|number|1\nefg|varchar|2");
-		System.out.println(evolvedChange.toString(true));
+		Schema readerDel = merge(writerDel, readerAdd);
+		readerDel.addProp("version", IntNode.valueOf(3));
+		System.out.println(readerDel.toString(true));
 
-		Schema evolved3 = merge(reader, evolvedChange);
-		evolved3.addProp("version", IntNode.valueOf(4));
-		System.out.println(evolved3.toString(true));
+		Schema writerChange = s.toAvsc("abc|float|1\nefg|varchar|2");
+		// System.out.println(writerChange.toString(true));
 
-		Schema evolved4 = merge(evolved3, evolvedChange);
-		evolved4.addProp("version", IntNode.valueOf(5));
-		System.out.println(evolved4.toString(true));
-
-		boolean compared = compare(evolved4, evolved3);
-		System.out.println("evolved3 and evolved compare = " + compared);
+		Schema readerChange = merge(writerChange, readerDel);
+		readerChange.addProp("version", IntNode.valueOf(4));
+		System.out.println(readerChange.toString(true));
 		
+		Schema writerChange2 = s.toAvsc("xyz|float|1\nabc|float|2\nefg|varchar|3");
+		Schema readerChange2 = merge(writerChange2, readerChange);
+		readerChange2.addProp("version", IntNode.valueOf(4));
+		System.out.println(readerChange2.toString(true));
+
 		SchemaPairCompatibility schemaPairCompatibility = new SchemaCompatibility.SchemaPairCompatibility(
-	            SchemaCompatibility.SchemaCompatibilityType.COMPATIBLE,
-	            evolved4,
-	            evolvedChange,
-	            SchemaCompatibility.READER_WRITER_COMPATIBLE_MESSAGE);
+				SchemaCompatibility.SchemaCompatibilityType.COMPATIBLE, readerChange, writerChange,
+				SchemaCompatibility.READER_WRITER_COMPATIBLE_MESSAGE);
 		System.out.println(schemaPairCompatibility.getDescription());
-		
-		final SchemaPairCompatibility result =
-		          checkReaderWriterCompatibility(evolved4, evolvedChange);
+
+		final SchemaPairCompatibility result = checkReaderWriterCompatibility(readerChange, writerChange);
 		System.out.println(result.getDescription());
+
+		System.out.println(CompatibilityChecker.FULL_TRANSITIVE_CHECKER.isCompatible(writerChange,
+				Arrays.asList(readerChange2)));
 
 	}
 
